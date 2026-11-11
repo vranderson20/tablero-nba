@@ -1011,7 +1011,7 @@ $("#resBtn").addEventListener("click",()=>fetchResults(false));
 /* ---------- asistente por mensajes de texto ---------- */
 (function(){
 const fab=$("#astFab"),panel=$("#astPanel"),log=$("#astLog"),form=$("#astForm"),inp=$("#astIn"),stop=$("#astStop"),sug=$("#astSug"),mode=$("#astMode");
-const SUGS=["Partidos de hoy","¿Quién gana Lakers vs Bucks?","Lesionados de los Knicks","Resultados de ayer","¿Qué tan acertado es el modelo?","Parlay de hoy","Estadísticas de Luka Dončić","Premier League"];
+const SUGS=["Partidos de hoy","¿Quién gana Lakers vs Bucks?","Lesionados de los Knicks","Resultados de ayer","¿Qué tan acertado es el modelo?","Parlay de hoy","Estadísticas de Luka Dončić","¿Quién tendrá más rebotes hoy?","Top 10 triples de la temporada","Probabilidad de que Jokic haga más de 10 rebotes","Premier League"];
 sug.innerHTML=SUGS.map(s=>`<button class="chip" type="button">${esc(s)}</button>`).join("");
 const open=o=>{panel.hidden=!o;fab.setAttribute("aria-expanded",String(o));if(o){inp.focus();if(!log.children.length)say("a","Hola. Soy el asistente del tablero. Puedo contarte pronósticos de un partido o de un día, lesionados de un equipo, resultados y aciertos, estadísticas de un jugador, la clasificación, un parlay con las selecciones más probables y datos de fútbol. Escribe tu pregunta.")}};
 fab.onclick=()=>open(panel.hidden);$("#astClose").onclick=()=>open(false);
@@ -1054,9 +1054,43 @@ function futbolAns(q){const f=fold(q);const L=(FUTBOL.leagues||[]);const lg=L.fi
  if(!lg)return`Tengo ${L.length} competiciones: ${L.map(l=>l.name).join(", ")}. Dime cuál quieres ver.`;
  const top=lg.table.slice(0,5).map(t=>`${t.pos}. ${t.team} ${t.pts} pts`).join("\n");const fx=lg.fixtures.slice(0,6).map(x=>{const m=Math.max(x.p1,x.px,x.p2);const w=m===x.p1?x.home:m===x.p2?x.away:"empate";return`• ${x.home} vs ${x.away} (${isoLbl(x.date)}): ${w==="empate"?"empate":"gana "+w} ${pctS(m)}`}).join("\n");
  return`**${lg.name}** — primeros de la tabla:\n${top}${fx?`\n\nPróximos partidos:\n${fx}`:"\n\nNo hay partidos próximos cargados."}`}
+// ---- rankings de jugadores, props y equipos ----
+const STATW=[["reb",/rebot/],["ast",/asist|pase/],["tpm",/triple|3pt|tres puntos|de tres/],["stl",/robo|recuper/],["blk",/tapon|bloque/],["pra",/p\+r\+a|pra\b|combinad/],["pts",/punto|anot|encest|goleador/]];
+const STATN={pts:"puntos",reb:"rebotes",ast:"asistencias",tpm:"triples",stl:"robos",blk:"tapones",pra:"P+R+A"};
+const statsIn=f=>STATW.filter(([k,r])=>r.test(f)).map(x=>x[0]);
+function gameCtx(g){const[d,tm,a,h,iso]=g;return[[a,{opp:h,home:false,iso,d,tm}],[h,{opp:a,home:true,iso,d,tm}]]}
+function projRank(stats,iso,tms,n){const L=[];dayGames(iso).forEach(g=>gameCtx(g).forEach(([t,ctx])=>{if(tms.length&&!tms.includes(t))return;
+  P.filter(p=>p.tm===t&&p.mp>=12&&p.g>=2).forEach(p=>{const pr=projPlayer(p,ctx);if(!pr||pr.isOut||(pr.inj&&pr.inj.s==="q"))return;L.push({p,pr,ctx})})}));
+ if(!L.length)return null;
+ return stats.map(k=>{const s=L.slice().sort((x,y)=>y.pr.out[k].mu-x.pr.out[k].mu).slice(0,n);
+  return`**${STATN[k]}** (proyección):\n${s.map((x,i)=>`${i+1}. ${x.p.name} (${TEAMS[x.p.tm][0]} ${x.ctx.home?"vs":"en"} ${TEAMS[x.ctx.opp][0]}) — ${f1(x.pr.out[k].mu)}`).join("\n")}`}).join("\n\n")}
+function seasonRank(stats,tms,n){const mg=Math.max(...P.map(p=>p.g));const L=P.filter(p=>p.g>=Math.max(2,Math.round(mg*.4))&&(!tms.length||tms.includes(p.tm)));
+ return stats.map(k=>`**${STATN[k]} por partido** (temporada):\n${L.slice().sort((x,y)=>y[k]-x[k]).slice(0,n).map((p,i)=>`${i+1}. ${p.name} (${TEAMS[p.tm][0]}) — ${f1(p[k])}`).join("\n")}`).join("\n\n")}
+function propAns(p,k,line,under){const pr=projPlayer(p);if(!pr)return`${p.name} no tiene partido próximo cargado.`;if(pr.isOut)return`${p.name} está fuera por lesión: ${pr.inj.c}.`;
+ const o=pr.out[k],mu=o.mu;let pOver;
+ if(k==="pts"||k==="pra")pOver=1-phi((line+.5-mu)/Math.max(o.sd,1));else pOver=1-poisCdf(Math.floor(line),mu);
+ const pr_=under?1-pOver:pOver;const nx=pr.nx;
+ return`**${p.name}** ${nx.home?"vs":"en"} ${TEAMS[nx.opp][0]} (${nx.d}): proyección ${f1(mu)} ${STATN[k]}.\nProbabilidad de ${under?"menos":"más"} de ${line} ${STATN[k]}: **${pctS(pr_)}**${pr.inj&&pr.inj.s==="q"?` (ojo: está en duda — ${pr.inj.c})`:""}.`}
+function teamRank(f){const ab=Object.keys(TEAMS),g=t=>Math.max(1,TEAMS[t][2]+TEAMS[t][3]);let key,label,desc=true;
+ if(/defens|recib|permit|menos punt/.test(f)){key=t=>TEAMS[t][5];label="menos puntos recibidos por partido";desc=false}
+ else if(/anota|ataque|ofens|mas punt/.test(f)){key=t=>TEAMS[t][4];label="más puntos por partido"}
+ else if(/diferencia|margen|net/.test(f)){key=t=>TEAMS[t][4]-TEAMS[t][5];label="mejor diferencia de puntos"}
+ else{key=t=>MODEL.elo[mc(t)]||1500;label="Elo (fuerza del equipo)"}
+ const s=ab.sort((x,y)=>desc?key(y)-key(x):key(x)-key(y)).slice(0,8);
+ return`**Equipos con ${label}:**\n${s.map((t,i)=>`${i+1}. ${TEAMS[t][0]} — ${f1(+key(t))} (${TEAMS[t][2]}-${TEAMS[t][3]})`).join("\n")}`}
+function statAnswer(q,f,tms,d){const st=statsIn(f);if(!st.length)return null;const pl=playerIn(q);const nm=f.match(/(\d+(?:[.,]\d)?)/);
+ if(pl&&nm&&!/\b(top|ranking)\b/.test(f)){const line=parseFloat(nm[1].replace(",","."));return propAns(pl,st[0],line,/menos|under|bajo/.test(f))}
+ if(pl)return playerAns(pl);
+ const n=/\btop ?(\d+)/.test(f)?Math.min(15,+f.match(/\btop ?(\d+)/)[1]):5;
+ if(/temporada|liga|promedio|lider|en el ano|del ano/.test(f)&&!d)return seasonRank(st,tms,n);
+ const iso=d||(tms.length?(GAMES_ALL.find(g=>tms.includes(g[2])||tms.includes(g[3]))||[])[4]:(GAMES[0]&&GAMES[0][4]));
+ if(!iso)return seasonRank(st,tms,n);const r=projRank(st,iso,tms,n);
+ return r?`Partidos del ${isoLbl(iso)}${tms.length?` (${tms.map(t=>TEAMS[t][0]).join(", ")})`:""} — jugadores disponibles:\n\n${r}`:`No hay partidos el ${isoLbl(iso)}. ${seasonRank(st,tms,n)}`}
 function localAnswer(q){const f=fold(q);const tms=teamsIn(q);const d=dateIn(q);
  if(/^(hola|buenas|buenos|hey)\b/.test(f)&&f.length<20)return"¡Hola! ¿Qué partido, equipo o jugador quieres revisar?";
- if(/ayuda|que puedes|que sabes/.test(f))return"Puedes preguntarme, por ejemplo:\n• Partidos de hoy / de mañana / del 15 de noviembre\n• ¿Quién gana Celtics vs Raptors?\n• Lesionados de los Lakers\n• Resultados de ayer\n• ¿Qué tan acertado es el modelo?\n• Estadísticas de Stephen Curry\n• Clasificación\n• Parlay de hoy\n• Premier League / LaLiga / Liga BetPlay";
+ if(/ayuda|que puedes|que sabes/.test(f))return"Puedes preguntarme, por ejemplo:\n• Partidos de hoy / de mañana / del 15 de noviembre\n• ¿Quién gana Celtics vs Raptors?\n• Lesionados de los Lakers\n• Resultados de ayer\n• ¿Qué tan acertado es el modelo?\n• Estadísticas de Stephen Curry\n• ¿Quién tendrá más rebotes / asistencias / triples / puntos hoy?\n• Top 10 anotadores de la temporada\n• Probabilidad de que Curry meta más de 4 triples\n• ¿Qué equipo anota más? / mejor defensa / mejor equipo\n• Clasificación\n• Parlay de hoy\n• Premier League / LaLiga / Liga BetPlay";
+ if(/equipo/.test(f)&&/mejor|peor|mas|menos|ranking|top|anota|defens|ataque|fuerte/.test(f)&&!statsIn(f).filter(k=>k!=="pts").length&&tms.length<1)return teamRank(f);
+ {const s=statAnswer(q,f,tms,d);if(s&&(!/lesion|resultad|parlay|clasific|tabla/.test(f)))return s}
  if(/acert|efectiv|precisi|fall/.test(f)&&!tms.length)return accuracy();
  if(/parlay|parley|combinad/.test(f))return parlayAns();
  if(/clasific|posicion|tabla|standing/.test(f)&&!/liga|premier|serie|bundes|ligue|betplay|champions|futbol/.test(f))return standings();
@@ -1074,13 +1108,15 @@ function localAnswer(q){const f=fold(q);const tms=teamsIn(q);const d=dateIn(q);
  const pl=playerIn(q);if(pl)return playerAns(pl);
  if(d||/partido|juega|hoy|manana|pronostic|favorit/.test(f)){const iso=d||(GAMES[0]&&GAMES[0][4]);const L=dayGames(iso);
   return L.length?`Partidos del ${isoLbl(iso)} (${L.length}):\n${L.map(g=>"• "+gameLine(g)).join("\n")}`:`No hay partidos NBA el ${isoLbl(iso)}.`}
+ {const words=f.split(/\s+/).filter(w=>w.length>3);const pl2=P.find(p=>words.some(w=>fold(p.name).split(" ").includes(w)));if(pl2)return playerAns(pl2)}
+ return"No encontré esa información. Puedo responder sobre: partidos y pronósticos (de hoy, mañana o una fecha), un partido (\"Lakers vs Bucks\"), un equipo, un jugador y sus estadísticas, rankings (\"quién tendrá más rebotes hoy\", \"top 10 triples de la temporada\", \"qué equipo anota más\"), probabilidades de jugador (\"probabilidad de que Jokic haga más de 10 rebotes\"), lesionados, resultados, acierto del modelo, clasificación, parlay y fútbol. Intenta reformular con alguno de esos temas."+"" ;
  return"No entendí la pregunta. Prueba con un equipo (\"Knicks\"), dos equipos (\"Lakers vs Bucks\"), un jugador, \"lesionados de…\", \"resultados de ayer\", \"partidos de hoy\", \"parlay\" o una liga de fútbol. Escribe \"ayuda\" para ver ejemplos."}
 // ---- con Claude (solo dentro de Claude) ----
 let sample=null,useTools=false;const turns=[];let ctl=null;
 (async()=>{try{sample=window.claude&&window.claude.use?await window.claude.use("sample"):null}catch(e){sample=null}
  if(sample){try{const l=await sample.limits();useTools=!!(l&&l.tools)}catch(e){}mode.textContent="Responde Claude con los datos del tablero (usa tu cuenta de Claude)."}})();
 const TOOLS=[
- {name:"consultar",description:"Responde con los datos del tablero a una consulta corta en español: un equipo ('Knicks'), un partido ('Lakers vs Bucks'), una fecha ('partidos de mañana', 'resultados de ayer'), 'lesionados de <equipo>', un jugador ('Stephen Curry'), 'clasificación', 'acierto del modelo', 'parlay de hoy' o una liga de fútbol. Devuelve texto con números.",inputSchema:{type:"object",properties:{consulta:{type:"string"}},required:["consulta"]},execute:i=>localAnswer(String(i.consulta||""))}];
+ {name:"consultar",description:"Responde con los datos del tablero a una consulta corta en español: un equipo ('Knicks'), un partido ('Lakers vs Bucks'), una fecha ('partidos de mañana', 'resultados de ayer'), 'lesionados de <equipo>', un jugador ('Stephen Curry'), 'clasificación', 'acierto del modelo', 'parlay de hoy', rankings ('quién tendrá más rebotes hoy', 'top 10 triples de la temporada', 'qué equipo anota más'), probabilidades de jugador ('probabilidad de que Jokic haga más de 10 rebotes') o una liga de fútbol. Devuelve texto con números.",inputSchema:{type:"object",properties:{consulta:{type:"string"}},required:["consulta"]},execute:i=>localAnswer(String(i.consulta||""))}];
 function context(){const iso=GAMES[0]&&GAMES[0][4];return`Fecha de hoy: ${todayIso()}. Datos del tablero al ${$(".meta").textContent.split("·")[0].replace("Datos al","").trim()}.\n${accuracy()}\nPróximos partidos (${iso?isoLbl(iso):"–"}):\n${(iso?dayGames(iso):[]).map(gameLine).join("\n")}`}
 const RULES=()=>`Eres el asistente del "Tablero NBA 2026-27", una página de estadísticas y pronósticos NBA y fútbol. Responde en español, breve y claro (máximo ~8 líneas), con los números de la página. ${useTools?"Usa la herramienta consultar para obtener datos (equipos, partidos, jugadores, lesiones, resultados, fútbol) antes de responder; no inventes cifras.":"Usa solo los datos de abajo; si no están, dilo y sugiere la sección de la página."} Los pronósticos son estimaciones estadísticas, no garantías ni recomendaciones de apuesta.\n\n${context()}`;
 form.onsubmit=async e=>{e.preventDefault();const q=inp.value.trim();if(!q)return;inp.value="";sug.hidden=true;say("u",q);
